@@ -27,7 +27,7 @@ public class ShareUtil{
     let argImages: String  = "images";
     let argVideoFile: String  = "videoFile";
 
-
+    public init() {}
     
     public func getInstalledApps(result: @escaping FlutterResult){
         let apps = [["instagram","instagram"],["facebook-stories","facebook_stories"],["whatsapp","whatsapp"],["tg","telegram"],["fb-messenger","messenger"],["tiktok","tiktok"],["instagram-stories","instagram_stories"],["twitter","twitter"],["sms","message"]]
@@ -54,7 +54,7 @@ public class ShareUtil{
 
     public func shareToInstagramFeed(args : [String: Any?],result: @escaping FlutterResult) {
         let filePath = args[argImagePath] as? String
-        if(!isImage(filePath: filePath!)) {
+        if !isImage(filePath: filePath!) {
             return shareVideoToInstagramFeed(args: args, result:result)
         } else{
             return shareImageToInstagramFeed(args: args, result:result)
@@ -105,9 +105,21 @@ public class ShareUtil{
 
 
     func shareVideoToInstagramFeed(args : [String: Any?],result: @escaping FlutterResult) {
+        shareMediaToInstagramFeed(args: args, fileExtension: "mp4", mediaType: .video, result: result)
+    }
+
+    func shareImageToInstagramFeed(args : [String: Any?],result: @escaping FlutterResult) {
+        shareMediaToInstagramFeed(args: args, fileExtension: "jpeg", mediaType: .image, result: result)
+    }
+    
+    func shareMediaToInstagramFeed(args : [String: Any?], fileExtension: String, mediaType: PHAssetMediaType, result: @escaping FlutterResult) {
         let videoFile = args[argImagePath] as? String
         let backgroundVideoUrl = URL(fileURLWithPath: videoFile!)
-        let videoData = try? Data(contentsOf: backgroundVideoUrl) as NSData
+        guard let videoData = try? Data(contentsOf: backgroundVideoUrl) as NSData
+        else {
+            result(self.ERROR)
+            return
+        }
 
         getLibraryPermissionIfNecessary { granted in
 
@@ -116,57 +128,87 @@ public class ShareUtil{
                 return
             }
         }
+        
+        var createdLocalIdentifier: String?
 
         PHPhotoLibrary.shared().performChanges({
+            let temporaryDirectory: URL
+            if #available(iOS 10.0, *) {
+                temporaryDirectory = FileManager.default.temporaryDirectory
+            } else {
+                temporaryDirectory = URL(fileURLWithPath: NSTemporaryDirectory())
+            }
+            
+            let fileURL = temporaryDirectory.appendingPathComponent("\(UUID().uuidString).\(fileExtension)")
 
-            let documentsPath = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true)[0];
-            let filePath = "\(documentsPath)/\(Date().description).mp4"
-
-            videoData!.write(toFile: filePath, atomically: true)
-            PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: URL(fileURLWithPath: filePath))
+            videoData.write(to: fileURL, atomically: true)
+            
+            let request: PHAssetChangeRequest?
+            
+            switch mediaType {
+            case .image:
+                request = PHAssetChangeRequest.creationRequestForAssetFromImage(atFileURL: fileURL)
+            case .video:
+                request = PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: fileURL)
+            default:
+                result(self.ERROR)
+                return
+            }
+            
+            createdLocalIdentifier = request?.placeholderForCreatedAsset?.localIdentifier
         },
         completionHandler: { success, error in
 
             if success {
+                
+                var localIdentifier = createdLocalIdentifier
+                
+                if localIdentifier == nil {
+                    let fetchOptions = PHFetchOptions()
+                    
+                    fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+                    
+                    let fetchResult = PHAsset.fetchAssets(with: mediaType, options: fetchOptions)
+                    
+                    localIdentifier = fetchResult.firstObject?.localIdentifier
+                }
+                
+                guard let localIdentifier
+                else {
+                    
+                    print("didn't find local identifier for media")
+                    result(self.ERROR)
+                    return
+                }
 
-                let fetchOptions = PHFetchOptions()
+                let urlFeed = "instagram://library?LocalIdentifier=" + localIdentifier
 
-                fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+                guard
+                    let url = URL(string: urlFeed)
+                else {
 
-                let fetchResult = PHAsset.fetchAssets(with: .video, options: fetchOptions)
+                    result(self.ERROR_APP_NOT_AVAILABLE)
+                    return
+                }
+                DispatchQueue.main.async {
 
-                if let lastAsset = fetchResult.firstObject {
+                    if UIApplication.shared.canOpenURL(url) {
 
-                    let localIdentifier = lastAsset.localIdentifier
-                    let urlFeed = "instagram://library?LocalIdentifier=" + localIdentifier
+                        if #available(iOS 10.0, *) {
 
-                    guard
-                        let url = URL(string: urlFeed)
-                    else {
-
-                        result(self.ERROR_APP_NOT_AVAILABLE)
-                        return
-                    }
-                    DispatchQueue.main.async {
-
-                        if UIApplication.shared.canOpenURL(url) {
-
-                            if #available(iOS 10.0, *) {
-
-                                UIApplication.shared.open(url, options: [:], completionHandler: { (success) in
-                                    result(self.SUCCESS)
-                                })
-                            }
-                            else {
-
-                                UIApplication.shared.openURL(url)
+                            UIApplication.shared.open(url, options: [:], completionHandler: { (success) in
                                 result(self.SUCCESS)
-                            }
+                            })
                         }
                         else {
 
-                            result(self.ERROR)
+                            UIApplication.shared.openURL(url)
+                            result(self.SUCCESS)
                         }
+                    }
+                    else {
+
+                        result(self.ERROR)
                     }
                 }
             }
@@ -180,90 +222,6 @@ public class ShareUtil{
             }
         })
     }
-
-    func shareImageToInstagramFeed(args : [String: Any?],result: @escaping FlutterResult) {
-            let videoFile = args[argImagePath] as? String
-            let backgroundVideoUrl = URL(fileURLWithPath: videoFile!)
-            let videoData = try? Data(contentsOf: backgroundVideoUrl) as NSData
-
-            getLibraryPermissionIfNecessary { granted in
-
-                guard granted else {
-                    result(self.ERROR)
-                    return
-                }
-            }
-
-
-            PHPhotoLibrary.shared().performChanges({
-
-                let documentsPath = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true)[0];
-                let filePath:String
-                     filePath = "\(documentsPath)/\(Date().description).jpeg"
-
-
-                videoData!.write(toFile: filePath, atomically: true)
-                    PHAssetChangeRequest.creationRequestForAssetFromImage(atFileURL: URL(fileURLWithPath: filePath))
-
-            },
-            completionHandler: { success, error in
-
-                if success {
-
-                    let fetchOptions = PHFetchOptions()
-
-                    fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-                    let type:PHAssetMediaType;
-                        type = PHAssetMediaType.image
-
-
-                    let fetchResult = PHAsset.fetchAssets(with: type, options: fetchOptions)
-
-                    if let lastAsset = fetchResult.firstObject {
-
-                        let localIdentifier = lastAsset.localIdentifier
-                        let urlFeed = "instagram://library?LocalIdentifier=" + localIdentifier
-
-                        guard
-                            let url = URL(string: urlFeed)
-                        else {
-
-                            result(self.ERROR_APP_NOT_AVAILABLE)
-                            return
-                        }
-                        DispatchQueue.main.async {
-
-                            if UIApplication.shared.canOpenURL(url) {
-
-                                if #available(iOS 10.0, *) {
-
-                                    UIApplication.shared.open(url, options: [:], completionHandler: { (success) in
-                                        result(self.SUCCESS)
-                                    })
-                                }
-                                else {
-
-                                    UIApplication.shared.openURL(url)
-                                    result(self.SUCCESS)
-                                }
-                            }
-                            else {
-
-                                result(self.ERROR)
-                            }
-                        }
-                    }
-                }
-                else if let error = error {
-
-                    print(error.localizedDescription)
-                }
-                else {
-
-                    result(self.ERROR)
-                }
-            })
-        }
 
     func getLibraryPermissionIfNecessary(completionHandler: @escaping  (Bool) -> Void) {
 
